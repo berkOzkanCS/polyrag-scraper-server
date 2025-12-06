@@ -1,5 +1,9 @@
 package main
 
+import (
+	"sync"
+)
+
 type State int
 
 const (
@@ -36,4 +40,33 @@ type ClientMessage struct {
 		Date         string `json:"date"`
 		ComputeHours int    `json:"computeHours"`
 	} `json:"article"`
+}
+
+type MasterMessage struct {
+	Urls       []string `json:"urls"`
+	Command    string   `json:"cmd"`
+	ClientName string   `json:"clientName"`
+}
+
+type Queue struct {
+	mu    sync.Mutex
+	queue []string
+}
+
+func (q *Queue) Enqueue(url string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.queue = append(q.queue, url)
+	//logM(fmt.Sprintf("Enqueueing %s len(q)", url, len(q.queue)))
+}
+
+func (q *Queue) Dequeue() (string, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.queue) <= 0 {
+		return "", false
+	}
+	val := q.queue[0]
+	q.queue = q.queue[1:]
+	return val, true
 }

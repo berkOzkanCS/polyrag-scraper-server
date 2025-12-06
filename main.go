@@ -1,7 +1,6 @@
 package main
 
 import (
-	//"encoding/json"
 	"encoding/json"
 	"fmt"
 	"github.com/gorilla/websocket"
@@ -15,6 +14,10 @@ type webSocketHandler struct {
 }
 
 var Clients []*Client
+var q = &Queue{}
+
+const CHUNK_SIZE uint8 = 100
+const MASTER_KEY string = "berk"
 
 func HandleClientConnection(name string, ip string) *Client {
 	for _, clientPtr := range Clients {
@@ -29,6 +32,102 @@ func HandleClientConnection(name string, ip string) *Client {
 	cPtr := ClientConstructor(name, ip)
 	Clients = append(Clients, cPtr)
 	return cPtr
+}
+
+func HandleClient(c *websocket.Conn, message []byte, client *Client) {
+	// parse client message from json
+	var clientMsg ClientMessage
+	if err := json.Unmarshal(message, &clientMsg); err != nil {
+		logM(fmt.Sprintf("bad json: %s", err))
+		return
+	}
+
+	//logM(fmt.Sprintf("Recieve message: %s.", string(message)))
+
+	if clientMsg.Article.Content != "" {
+		// probably asynchroniously save to sqlite
+	}
+
+	// update client
+	client.ComputeHours += clientMsg.Article.ComputeHours
+	client.State = clientMsg.State
+
+	if client.State == Idle {
+		AssignWorkToClient(c, client)
+	}
+
+}
+
+func AssignWorkToClient(c *websocket.Conn, client *Client) {
+	var urls []string
+	var i uint8 = 0
+	for {
+		url, success := q.Dequeue()
+		if success == false || i >= CHUNK_SIZE {
+			break
+		}
+		urls = append(urls, url)
+		i += 1
+	}
+
+	// send urls to client
+	msg := MasterMessage{
+		Urls:       urls,
+		Command:    "process",
+		ClientName: client.Name, // can be used to check if messae was sent to the correct client
+	}
+
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		logM(fmt.Sprintf("Error: Could not construct json message %s", err))
+		return
+	}
+
+	err = c.WriteMessage(websocket.TextMessage, jsonData)
+	if err != nil {
+		logM(fmt.Sprintf("Error: Could not send json message to client: %s", err))
+		return
+	}
+
+	// update client state to working if success
+	client.State = Working
+}
+
+func AssignWorkToIdle(c *websocket.Conn) {
+	for _, client := range Clients {
+		if client.State == Idle {
+			AssignWorkToClient(c, client)
+		}
+	}
+}
+
+func HandleMaster(c *websocket.Conn, message []byte, client *Client) {
+	var masterMsg MasterMessage
+	if err := json.Unmarshal(message, &masterMsg); err != nil {
+		logM(fmt.Sprintf("bad json: %s", err))
+		logM(fmt.Sprintf("msg: %s", message))
+		return
+	}
+
+	switch masterMsg.Command {
+	case "stop":
+		// send stop command to client
+		clientName := masterMsg.ClientName
+		if clientName == "" {
+			// foo
+		}
+	case "kill":
+		// send kill command to client named
+		clientName := masterMsg.ClientName
+		if clientName == "" {
+			// foo
+		}
+	default:
+		// load article urls into queue
+		for _, url := range masterMsg.Urls {
+			q.Enqueue(url)
+		}
+	}
 }
 
 func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,57 +156,24 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		mt, message, err := c.ReadMessage()
 		if err != nil {
 			logM(fmt.Sprintf("Error %s when reading message from client", err))
-			return
+			continue
 		}
 		if mt == websocket.BinaryMessage {
 			err = c.WriteMessage(websocket.TextMessage, []byte("server does not support binary messages."))
 			if err != nil {
 				logM(fmt.Sprintf("Error %s when sending message to client", err))
 			}
-			return
-		}
-
-		// parse client message from json
-		var clientMsg ClientMessage
-		if err := json.Unmarshal(message, &clientMsg); err != nil {
-			logM(fmt.Sprintf("bad json: %s", err))
 			continue
 		}
 
-		logM(fmt.Sprintf("Recieve message: %s.", string(message)))
-
-		if clientMsg.Article.Content != "" {
-			// probably asynchroniously save to sqlite
+		if client.Name == MASTER_KEY {
+			HandleMaster(c, message, client)
+		} else {
+			HandleClient(c, message, client)
 		}
 
-		// update client
-		client.ComputeHours += clientMsg.Article.ComputeHours
-		client.State = clientMsg.State
-
-		if client.State == Idle {
-			// assign work from work buffer via round robbin
-		}
-
-		//	if strings.Trim(string(message), "\n") != "start" {
-		//		err = c.WriteMessage(websocket.TextMessage, []byte("You did not say the magic word!"))
-		//		if err != nil {
-		//			log.Printf("Error %s when sending message to client", err)
-		//			return
-		//		}
-		//		continue
-		//	}
-		//	logM(fmt.Sprintln("Start responding to client..."))
-		//	i := 1
-		//	for {
-		//		response := fmt.Sprintf("Notification %d", i)
-		//		err := c.WriteMessage(websocket.TextMessage, []byte(response))
-		//		if err != nil {
-		//			logM(fmt.Sprintf("Error %s when sending message to client", err))
-		//			return
-		//		}
-		//		i = i + 1
-		//		time.Sleep(2 * time.Second)
-		//	}
+		// check for any idleness
+		AssignWorkToIdle(c)
 	}
 
 }
