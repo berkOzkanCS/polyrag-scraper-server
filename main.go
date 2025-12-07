@@ -15,11 +15,12 @@ type webSocketHandler struct {
 
 var Clients []*Client
 var q = &Queue{}
+var Metadata = &ComputeData{}
 
 const CHUNK_SIZE uint8 = 100
 const MASTER_KEY string = "berk"
 
-func HandleClientConnection(name string, ip string) *Client {
+func HandleClientConnection(c *websocket.Conn, name string, ip string) *Client {
 	for _, clientPtr := range Clients {
 		if clientPtr.Name == name || clientPtr.Ip == ip {
 			clientPtr.Name = name
@@ -29,7 +30,7 @@ func HandleClientConnection(name string, ip string) *Client {
 	}
 
 	// user not found so create new user
-	cPtr := ClientConstructor(name, ip)
+	cPtr := ClientConstructor(c, name, ip)
 	Clients = append(Clients, cPtr)
 	return cPtr
 }
@@ -70,27 +71,38 @@ func AssignWorkToClient(c *websocket.Conn, client *Client) {
 		i += 1
 	}
 
+	// logM(fmt.Sprintf("client: %s", client.Name))
+
+	if urls == nil {
+		logM(fmt.Sprintf("Queue empty, no work to assign."))
+		return
+	}
+
 	// send urls to client
 	msg := MasterMessage{
 		Urls:       urls,
 		Command:    "process",
-		ClientName: client.Name, // can be used to check if messae was sent to the correct client
+		ClientName: client.Name, // can be used to check if message was sent to the correct client
 	}
 
-	jsonData, err := json.Marshal(msg)
-	if err != nil {
-		logM(fmt.Sprintf("Error: Could not construct json message %s", err))
-		return
-	}
+	err := SendMessage(c, msg)
 
-	err = c.WriteMessage(websocket.TextMessage, jsonData)
 	if err != nil {
-		logM(fmt.Sprintf("Error: Could not send json message to client: %s", err))
 		return
 	}
 
 	// update client state to working if success
 	client.State = Working
+}
+
+func SendMessage[T any](c *websocket.Conn, msg T) error {
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		logM(fmt.Sprintf("Error: Could not construct json message %s", err))
+		return err
+	}
+
+	return c.WriteMessage(websocket.TextMessage, jsonData)
 }
 
 func AssignWorkToIdle(c *websocket.Conn) {
@@ -109,25 +121,54 @@ func HandleMaster(c *websocket.Conn, message []byte, client *Client) {
 		return
 	}
 
-	switch masterMsg.Command {
-	case "stop":
-		// send stop command to client
-		clientName := masterMsg.ClientName
-		if clientName == "" {
-			// foo
-		}
-	case "kill":
-		// send kill command to client named
-		clientName := masterMsg.ClientName
-		if clientName == "" {
-			// foo
-		}
-	default:
+	if masterMsg.Command == "process" || masterMsg.Command == "" {
 		// load article urls into queue
 		for _, url := range masterMsg.Urls {
 			q.Enqueue(url)
 		}
+		return
 	}
+
+	// send stop command to client
+	clientName := masterMsg.ClientName
+	msg := MasterMessage{
+		Urls:       masterMsg.Urls,
+		Command:    masterMsg.Command,
+		ClientName: clientName, // can be used to check if message was sent to the correct client
+	}
+
+	if msg.Urls != nil {
+
+	}
+	//err := SendMessage(c, msg) // this should send a message to the target client right?
+	//if err != nil {
+	//	return
+	//}
+}
+
+func GetMasterClient() (*Client, error) {
+	for _, client := range Clients {
+		if client.Name == MASTER_KEY {
+			return client, nil
+		}
+	}
+
+	return nil, fmt.Errorf("No master found")
+}
+
+func UpdateMasterClient() error {
+	master, err := GetMasterClient()
+
+	if err != nil {
+		return err
+	}
+
+	UMM := UpdateMasterMessage{
+		Clients:  Clients,
+		Metadata: Metadata,
+	}
+
+	return SendMessage(master.WsConnection, UMM)
 }
 
 func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -137,14 +178,12 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.URL.Query().Get("name")
 
-	// retrieve or create new client in clients list
-	client := HandleClientConnection(name, ip)
-
-	if client != nil {
-
-	}
 	// confirm websocket handshake
 	c, err := wsh.upgrader.Upgrade(w, r, nil)
+
+	// retrieve or create new client in clients list
+	client := HandleClientConnection(c, name, ip)
+
 	if err != nil {
 		logM(fmt.Sprintf("error %s when upgrading connection to websocket", err))
 		return
@@ -171,9 +210,15 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			HandleClient(c, message, client)
 		}
+		// update master client
+		err = UpdateMasterClient()
+		if err != nil {
+			logM(fmt.Sprintf("Error: %s", err))
+		}
 
 		// check for any idleness
 		AssignWorkToIdle(c)
+
 	}
 
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/gorilla/websocket"
 	"sync"
 )
 
@@ -19,19 +20,21 @@ type Client struct {
 	ComputeHours      int
 	ArticlesProcessed int
 	State             State
+	WsConnection      *websocket.Conn
 }
 
-func ClientConstructor(name, ip string) *Client {
+func ClientConstructor(c *websocket.Conn, name, ip string) *Client {
 	return &Client{
 		Name:              name,
 		Ip:                ip,
 		ComputeHours:      0,
 		ArticlesProcessed: 0,
 		State:             Idle,
+		WsConnection:      c,
 	}
 }
 
-type ClientMessage struct {
+type ClientMessage struct { // message coming from clinet -> server
 	Name    string `json:"name"`
 	State   State  `json:"state"`
 	Article struct {
@@ -42,10 +45,20 @@ type ClientMessage struct {
 	} `json:"article"`
 }
 
-type MasterMessage struct {
+type MasterMessage struct { // message coming from master->server or server->client
 	Urls       []string `json:"urls"`
 	Command    string   `json:"cmd"`
 	ClientName string   `json:"clientName"`
+}
+
+type UpdateMasterMessage struct { // message being sent from server -> master
+	Clients  []*Client `json:"clients"`
+	Metadata *ComputeData
+}
+
+type ComputeData struct {
+	TotalComputeHour       int16 `json:"totalComputeHour"`
+	TotalArticlesProcessed int16 `json:"totalArticlesProcessed"`
 }
 
 type Queue struct {
