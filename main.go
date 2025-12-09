@@ -1,9 +1,11 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/gorilla/websocket"
+	"github.com/mattn/go-sqlite3"
 	"log"
 	"net"
 	"net/http"
@@ -16,6 +18,8 @@ type webSocketHandler struct {
 var cl = &ClientList{}
 var q = &Queue{}
 var Metadata = &ComputeData{}
+var db *sql.DB
+var insertCh chan InsertJob
 
 const CHUNK_SIZE uint8 = 100
 const MASTER_KEY string = "berk"
@@ -45,7 +49,18 @@ func HandleClient(message []byte, client *Client) {
 
 	if clientMsg.Article.Content != "" {
 		// probably asynchroniously save to sqlite
-		logM(fmt.Sprintf("Article Saved!"))
+		done := make(chan error, 1)
+		insertCh <- InsertJob{
+			Title:   clientMsg.Article.Title,
+			Content: clientMsg.Article.Content,
+			Date:    clientMsg.Article.Date,
+			Done:    done,
+		}
+		if err := <-done; err != nil {
+			logM(fmt.Sprintf("DB insert failed: %s", err))
+		} else {
+			logM("Article Saved!")
+		}
 	}
 
 	// update client
@@ -186,6 +201,25 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	var err error
+	db, err = sql.Open("sqlite3", "file:my.db?_journal=WAL&_busy_timeout=5000")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	insertCh = make(chan InsertJob, 256)
+
+	go func() {
+		for job := range insertCh {
+			_, err := db.Exec(
+				`INSERT INTO articles(title, content, date) VALUES(?, ?, ?)`,
+				job.Title, job.Content, job.Date,
+			)
+			job.Done <- err
+			close(job.Done)
+		}
+	}()
+
 	webSocketHandler := webSocketHandler{
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
