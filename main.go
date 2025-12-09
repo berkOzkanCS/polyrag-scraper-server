@@ -13,7 +13,7 @@ type webSocketHandler struct {
 	upgrader websocket.Upgrader
 }
 
-var Clients []*Client
+var cl = &ClientList{}
 var q = &Queue{}
 var Metadata = &ComputeData{}
 
@@ -21,21 +21,19 @@ const CHUNK_SIZE uint8 = 100
 const MASTER_KEY string = "berk"
 
 func HandleClientConnection(c *websocket.Conn, name string, ip string) *Client {
-	for _, clientPtr := range Clients {
-		if clientPtr.Name == name || clientPtr.Ip == ip {
-			clientPtr.Name = name
-			clientPtr.Ip = ip
-			return clientPtr
-		}
+	client := cl.FindByNameOrIp(name, ip)
+
+	if client != nil {
+		return client
 	}
 
 	// user not found so create new user
 	cPtr := ClientConstructor(c, name, ip)
-	Clients = append(Clients, cPtr)
+	cl.Add(cPtr)
 	return cPtr
 }
 
-func HandleClient(c *websocket.Conn, message []byte, client *Client) {
+func HandleClient(message []byte, client *Client) {
 	// parse client message from json
 	var clientMsg ClientMessage
 	if err := json.Unmarshal(message, &clientMsg); err != nil {
@@ -43,59 +41,27 @@ func HandleClient(c *websocket.Conn, message []byte, client *Client) {
 		return
 	}
 
-	//logM(fmt.Sprintf("Recieve message: %s.", string(message)))
+	logM(fmt.Sprintf("Recieve message: %s.", string(message)))
 
 	if clientMsg.Article.Content != "" {
 		// probably asynchroniously save to sqlite
+		logM(fmt.Sprintf("Article Saved!"))
 	}
 
 	// update client
 	client.ComputeHours += clientMsg.Article.ComputeHours
 	client.State = clientMsg.State
 
+	Metadata.Add(int16(clientMsg.Article.ComputeHours), 1)
+
 	if client.State == Idle {
-		AssignWorkToClient(c, client)
+		cl.AssignWorkToClient(client)
 	}
 
-}
-
-func AssignWorkToClient(c *websocket.Conn, client *Client) {
-	var urls []string
-	var i uint8 = 0
-	for {
-		url, success := q.Dequeue()
-		if success == false || i >= CHUNK_SIZE {
-			break
-		}
-		urls = append(urls, url)
-		i += 1
-	}
-
-	// logM(fmt.Sprintf("client: %s", client.Name))
-
-	if urls == nil {
-		logM(fmt.Sprintf("Queue empty, no work to assign."))
-		return
-	}
-
-	// send urls to client
-	msg := MasterMessage{
-		Urls:       urls,
-		Command:    "process",
-		ClientName: client.Name, // can be used to check if message was sent to the correct client
-	}
-
-	err := SendMessage(c, msg)
-
-	if err != nil {
-		return
-	}
-
-	// update client state to working if success
-	client.State = Working
 }
 
 func SendMessage[T any](c *websocket.Conn, msg T) error {
+	logM("Sending message to cclient.")
 	jsonData, err := json.Marshal(msg)
 	if err != nil {
 		logM(fmt.Sprintf("Error: Could not construct json message %s", err))
@@ -105,15 +71,7 @@ func SendMessage[T any](c *websocket.Conn, msg T) error {
 	return c.WriteMessage(websocket.TextMessage, jsonData)
 }
 
-func AssignWorkToIdle(c *websocket.Conn) {
-	for _, client := range Clients {
-		if client.State == Idle {
-			AssignWorkToClient(c, client)
-		}
-	}
-}
-
-func HandleMaster(c *websocket.Conn, message []byte, client *Client) {
+func HandleMaster(message []byte) {
 	var masterMsg MasterMessage
 	if err := json.Unmarshal(message, &masterMsg); err != nil {
 		logM(fmt.Sprintf("bad json: %s", err))
@@ -121,51 +79,44 @@ func HandleMaster(c *websocket.Conn, message []byte, client *Client) {
 		return
 	}
 
-	if masterMsg.Command == "process" || masterMsg.Command == "" {
+	if masterMsg.Command.Cmd == "process" || masterMsg.Command.Cmd == "" {
 		// load article urls into queue
 		for _, url := range masterMsg.Urls {
 			q.Enqueue(url)
+			logM(fmt.Sprintf("Successfuly queued %s", url))
 		}
+		logM(fmt.Sprintf("Exitin Master Msg Handler"))
 		return
-	}
-
-	// send stop command to client
-	clientName := masterMsg.ClientName
-	msg := MasterMessage{
-		Urls:       masterMsg.Urls,
-		Command:    masterMsg.Command,
-		ClientName: clientName, // can be used to check if message was sent to the correct client
-	}
-
-	if msg.Urls != nil {
-
-	}
-	//err := SendMessage(c, msg) // this should send a message to the target client right?
-	//if err != nil {
-	//	return
-	//}
-}
-
-func GetMasterClient() (*Client, error) {
-	for _, client := range Clients {
-		if client.Name == MASTER_KEY {
-			return client, nil
+	} else {
+		// send command to client
+		clientName := masterMsg.ClientName
+		msg := MasterMessage{
+			Urls:       nil,
+			Command:    masterMsg.Command,
+			ClientName: clientName, // can be used to check if message was sent to the correct client
 		}
+		clientToSendMsg := cl.FindByName(clientName)
+		if clientToSendMsg != nil {
+			err := SendMessage(clientToSendMsg.WsConnection, msg)
+			if err != nil {
+				logM(fmt.Sprintf("%s", err))
+			}
+		}
+		logM(fmt.Sprintf("Could not find clinet by the name %s", clientName))
 	}
-
-	return nil, fmt.Errorf("No master found")
 }
 
 func UpdateMasterClient() error {
-	master, err := GetMasterClient()
+	master, err := cl.GetMasterClient()
 
 	if err != nil {
 		return err
 	}
 
 	UMM := UpdateMasterMessage{
-		Clients:  Clients,
-		Metadata: Metadata,
+		Clients:    cl.GetClientList(),
+		Metadata:   Metadata,
+		QueueLenth: q.Length(),
 	}
 
 	return SendMessage(master.WsConnection, UMM)
@@ -183,6 +134,14 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// retrieve or create new client in clients list
 	client := HandleClientConnection(c, name, ip)
+
+	if client.Name == MASTER_KEY {
+		msg := fmt.Sprintf("Master Client %s Connected!", MASTER_KEY)
+		err = c.WriteMessage(websocket.TextMessage, []byte(msg))
+		if err != nil {
+			logM(fmt.Sprintf("Error %s when sending message to client", err))
+		}
+	}
 
 	if err != nil {
 		logM(fmt.Sprintf("error %s when upgrading connection to websocket", err))
@@ -206,18 +165,21 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if client.Name == MASTER_KEY {
-			HandleMaster(c, message, client)
+			HandleMaster(message)
 		} else {
-			HandleClient(c, message, client)
+			HandleClient(message, client)
 		}
-		// update master client
+
+		// update master
 		err = UpdateMasterClient()
+		logM("Master client updated")
 		if err != nil {
 			logM(fmt.Sprintf("Error: %s", err))
 		}
 
 		// check for any idleness
-		AssignWorkToIdle(c)
+		logM("Checking for idle workers")
+		cl.AssignWorkToIdle()
 
 	}
 
