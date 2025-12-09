@@ -43,10 +43,3 @@ type Command struct {
 	Cmd    string `json:"cmd"`
 	Params string `json:"parameters"`
 }
-
-type InsertJob struct {
-	Title   string
-	Content string
-	Date    string
-	Done    chan error
-}
