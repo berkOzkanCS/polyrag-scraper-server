@@ -7,6 +7,7 @@ import (
 )
 
 func ClientConstructor(c *websocket.Conn, name, ip string) *Client {
+	logM(fmt.Sprintf("Creading new client, name: %s.", name))
 	return &Client{
 		Name:              name,
 		Ip:                ip,
@@ -21,6 +22,7 @@ func (cl *ClientList) Add(client *Client) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 	cl.Clients = append(cl.Clients, client)
+	logM(fmt.Sprintf("Added to Client List, length: %d.", len(cl.Clients)))
 }
 
 func (cl *ClientList) FindByNameOrIp(name, ip string) *Client {
@@ -63,10 +65,11 @@ func (cl *ClientList) AssignWorkToClient(client *Client) {
 	logM(fmt.Sprintf("Assigning work to client: %s", client.Name))
 
 	var urls []string
-	var i uint8 = 0
+	var i uint8 = 1
 	for {
 		url, success := q.Dequeue()
-		if success == false || i >= CHUNK_SIZE {
+		logM(fmt.Sprintf("url: %s, success: %d, i: %d.", url, success, i))
+		if success == false || i > CHUNK_SIZE {
 			break
 		}
 		urls = append(urls, url)

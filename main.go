@@ -17,13 +17,15 @@ var cl = &ClientList{}
 var q = &Queue{}
 var Metadata = &ComputeData{}
 
-const CHUNK_SIZE uint8 = 100
+const CHUNK_SIZE uint8 = 2
 const MASTER_KEY string = "berk"
 
 func HandleClientConnection(c *websocket.Conn, name string, ip string) *Client {
+	logM(fmt.Sprintf("Client is requesting to connect, name: %s, ip: %s.", name, ip))
 	client := cl.FindByNameOrIp(name, ip)
 
 	if client != nil {
+		logM(fmt.Sprintf("Client %s already exists, using client obj.", name))
 		return client
 	}
 
@@ -41,7 +43,8 @@ func HandleClient(message []byte, client *Client) {
 		return
 	}
 
-	logM(fmt.Sprintf("Recieve message: %s.", string(message)))
+	logM(fmt.Sprintf("msg %s", string(message)))
+	logM(fmt.Sprintf("T: %s, C: %s", clientMsg.Article.Title, clientMsg.Article.Content))
 
 	if clientMsg.Article.Content != "" {
 		// probably asynchroniously save to sqlite
@@ -72,6 +75,10 @@ func SendMessage[T any](c *websocket.Conn, msg T) error {
 }
 
 func HandleMaster(message []byte) {
+	/*
+		Example JSON:
+		{"urls":["u1", "u2", "u3"], "command": {"cmd":"process", "parameters":""}, "clientName":""}
+	*/
 	var masterMsg MasterMessage
 	if err := json.Unmarshal(message, &masterMsg); err != nil {
 		logM(fmt.Sprintf("bad json: %s", err))
@@ -80,14 +87,16 @@ func HandleMaster(message []byte) {
 	}
 
 	if masterMsg.Command.Cmd == "process" || masterMsg.Command.Cmd == "" {
+		logM(fmt.Sprintf("Adding URLs to Queue"))
 		// load article urls into queue
 		for _, url := range masterMsg.Urls {
 			q.Enqueue(url)
 			logM(fmt.Sprintf("Successfuly queued %s", url))
 		}
-		logM(fmt.Sprintf("Exitin Master Msg Handler"))
+		logM(fmt.Sprintf("Exiting Master Msg Handler"))
 		return
 	} else {
+		logM(fmt.Sprintf("Sending command to client: %s.", masterMsg.Command))
 		// send command to client
 		clientName := masterMsg.ClientName
 		msg := MasterMessage{
@@ -131,25 +140,31 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// confirm websocket handshake
 	c, err := wsh.upgrader.Upgrade(w, r, nil)
-
-	// retrieve or create new client in clients list
-	client := HandleClientConnection(c, name, ip)
-
-	if client.Name == MASTER_KEY {
-		msg := fmt.Sprintf("Master Client %s Connected!", MASTER_KEY)
-		err = c.WriteMessage(websocket.TextMessage, []byte(msg))
-		if err != nil {
-			logM(fmt.Sprintf("Error %s when sending message to client", err))
-		}
-	}
-
 	if err != nil {
 		logM(fmt.Sprintf("error %s when upgrading connection to websocket", err))
 		return
 	}
 	defer c.Close()
 
+	// retrieve or create new client in clients list
+	client := HandleClientConnection(c, name, ip)
+
+	logM(fmt.Sprintf("Checking if client name: %s matches MASTER_KEY.", client.Name))
+	if client.Name == MASTER_KEY {
+		msg := fmt.Sprintf("Master Client %s Connected!", MASTER_KEY)
+		logM(fmt.Sprintf("Client name matches MASTER_KEY, sending confirmation message."))
+		err = c.WriteMessage(websocket.TextMessage, []byte(msg))
+		if err != nil {
+			logM(fmt.Sprintf("Error %s when sending message to client", err))
+		}
+	}
+
+	// check for any idleness
+	logM("Checking for idle workers")
+	cl.AssignWorkToIdle()
+
 	// main server loop
+	logM(fmt.Sprintf("Entering main server loop"))
 	for {
 		mt, message, err := c.ReadMessage()
 		if err != nil {
@@ -167,6 +182,7 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if client.Name == MASTER_KEY {
 			HandleMaster(message)
 		} else {
+			logM(fmt.Sprintf("handlin client msg"))
 			HandleClient(message, client)
 		}
 

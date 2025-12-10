@@ -18,7 +18,7 @@ type MasterMessage struct { // message coming from master->server or server->cli
 }
 
 type UpdateMasterMessage struct { // message being sent from server -> master
-	Clients    []*Client `json:"clients"`
-	Metadata   *ComputeData
-	QueueLenth int16
+	Clients    []*Client    `json:"clients"`
+	Metadata   *ComputeData `json:"metadata"`
+	QueueLenth int16        `json:"queueLen"`
 }
