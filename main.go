@@ -43,12 +43,19 @@ func HandleClient(message []byte, client *Client) {
 		return
 	}
 
-	logM(fmt.Sprintf("msg %s", string(message)))
-	logM(fmt.Sprintf("T: %s, C: %s", clientMsg.Article.Title, clientMsg.Article.Content))
+	//logM(fmt.Sprintf("msg %s", string(message)))
 
 	if clientMsg.Article.Content != "" {
 		// probably asynchroniously save to sqlite
+		logM(fmt.Sprintf("Title: %s", clientMsg.Article.Title))
+		//logM(fmt.Sprintf("Content: %s",  clientMsg.Article.Content))
+		logM(fmt.Sprintf("Date: %s", clientMsg.Article.Date))
+		logM(fmt.Sprintf("Hours: %f", clientMsg.Article.ComputeHours))
 		logM("Article Saved!")
+	} else if clientMsg.Article.Title == "" && clientMsg.State == Idle {
+		logM("Client is idle")
+		cl.AssignWorkToClient(client)
+		return
 	}
 
 	// update client
@@ -181,10 +188,10 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if client.Name == MASTER_KEY {
 			HandleMaster(message)
-		} else {
-			logM(fmt.Sprintf("handlin client msg"))
-			HandleClient(message, client)
 		}
+
+		// master can process data too
+		HandleClient(message, client)
 
 		// update master
 		err = UpdateMasterClient()
@@ -196,6 +203,7 @@ func (wsh webSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// check for any idleness
 		logM("Checking for idle workers")
 		cl.AssignWorkToIdle()
+		logM("end of loop")
 
 	}
 

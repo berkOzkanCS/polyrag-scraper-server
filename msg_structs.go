@@ -4,10 +4,10 @@ type ClientMessage struct { // message coming from clinet -> server
 	Name    string `json:"name"`
 	State   State  `json:"state"`
 	Article struct {
-		Title        string `json:"title"`
-		Content      string `json:"content"`
-		Date         string `json:"date"`
-		ComputeHours int    `json:"computeHours"`
+		Title        string  `json:"title"`
+		Content      string  `json:"content"`
+		Date         string  `json:"date"`
+		ComputeHours float32 `json:"computeHours"`
 	} `json:"article"`
 }
 

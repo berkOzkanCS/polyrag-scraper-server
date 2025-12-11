@@ -145,6 +145,6 @@ func (q *Queue) Dequeue() (string, bool) {
 func (cd *ComputeData) Add(computeHr, articleCnt int16) {
 	cd.mu.Lock()
 	defer cd.mu.Unlock()
-	cd.TotalComputeHour += computeHr
+	cd.TotalComputeHour += float32(computeHr)
 	cd.TotalArticlesProcessed += articleCnt
 }

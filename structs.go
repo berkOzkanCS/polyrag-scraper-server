@@ -17,7 +17,7 @@ const (
 type Client struct {
 	Name              string
 	Ip                string
-	ComputeHours      int
+	ComputeHours      float32
 	ArticlesProcessed int
 	State             State
 	WsConnection      *websocket.Conn
@@ -25,8 +25,8 @@ type Client struct {
 
 type ComputeData struct {
 	mu                     sync.Mutex
-	TotalComputeHour       int16 `json:"totalComputeHour"`
-	TotalArticlesProcessed int16 `json:"totalArticlesProcessed"`
+	TotalComputeHour       float32 `json:"totalComputeHour"`
+	TotalArticlesProcessed int16   `json:"totalArticlesProcessed"`
 }
 
 type ClientList struct {
